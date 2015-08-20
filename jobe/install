@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+# This installer sets up the required jobe users (i.e. the "users"
+# that run submitted jobs) and compiles and adjusts the runguard sandbox.
+# It must be run as root.
+
+# If run with the parameter --purge, all files and users set up by a previous
+# run of the script are deleted at the start.
+
+from __future__ import print_function
+import os
+import subprocess
+import re
+import sys
+
+
+JOBE_DIRS = ['/var/www/jobe', '/var/www/html/jobe']
+
+def get_config(param_name, install_dir):
+    '''Get a config parameter from <<install_dir>>/application/config/config.php.
+       An exception occurs if either the file or the required parameter
+       is not found.
+    '''
+    with open('{}/application/config/config.php'.format(install_dir)) as config:
+        lines = config.readlines()
+    pattern = r" *\$config\[ *'{}' *\] *= *([^;]+).*$".format(param_name)
+    for line in lines:
+        match = re.match(pattern, line)
+        if match:
+            return match.group(1)
+    raise Exception('Config param ' + param_name + ' not found')
+    
+
+def fail():
+    print("Install failed")
+    sys.exit(1);
+
+
+def get_webserver():
+    '''Find the user name used to run the Apache web server'''
+    ps_cmd = "ps aux | grep /usr/sbin/apache2"
+    ps_lines = subprocess.check_output(ps_cmd, shell=True).decode('utf8').split('\n')
+    names = {ps_line.split(' ')[0] for ps_line in ps_lines}
+    candidates = names.intersection(set(['apache', 'www-data']))
+    if len(candidates) != 1:
+        raise Exception("Couldn't determine web-server user id. Is the web server running?")
+    return list(candidates)[0]
+
+
+def do_command(cmd):
+    '''Execute the given OS command user subprocess.call.
+       Raise an exception on failure.
+    '''
+    if subprocess.call(cmd, shell=True) != 0:
+        raise OSError("Command ({}) failed".format(cmd))
+
+
+def make_sudoers(install_dir, webserver_user, num_jobe_users):
+    '''Build a custom jobe-sudoers file for include in /etc/sudoers.d.
+       It allows the webserver to run the runguard program as root and also to
+       kill any jobe tasks and delete the run directories.
+    '''
+    commands = [install_dir + '/runguard/runguard']
+    commands.append('/bin/rm -R /home/jobe/runs/*')
+    for i in range(num_jobe_users):
+        commands.append('/usr/bin/pkill -9 -u jobe{:02d}'.format(i))
+    
+    sudoers_file_name = '/etc/sudoers.d/jobe-sudoers'
+    with open(sudoers_file_name, 'w') as sudoers:
+        os.chmod(sudoers_file_name, 0o440)
+        for cmd in commands:
+            sudoers.write('{} ALL=(root) NOPASSWD: {}\n'.format(webserver_user, cmd))
+
+
+def make_user(username, comment, make_home_dir=False, group='jobe'):
+    ''' Check if user exists. If not, add the named user with the given comment.
+        Make a home directory only if make_home_dir is true.
+    '''
+    try:
+        do_command('id ' + username + '> /dev/null 2>&1')
+        print(username, 'already exists')
+    except:
+        opt = '--home /home/jobe -m' if make_home_dir else ' -M'
+        if group is None:
+            group_opt = ''
+        else:
+            group_opt = ' -g ' + group
+        do_command('useradd {} -s "/bin/false"{} -c "{}" {}'.format(opt, group_opt, comment, username))
+
+
+def make_directory(dirpath, webuser):
+    '''If dirpath doesn't exist, make a directory and give it
+       jobe:webuser ownership and 770 permissions'''
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+    do_command('chown jobe:{0} {1}; chmod 771 {1}'.format(webuser, dirpath)) 
+
+
+def do_purge(install_dir, num_runners):
+    '''Purge existing users and extra files set up by a previous install'''
+
+    try:
+        for i in range(num_runners):
+            do_command('userdel jobe{:02d}'.format(i))
+        do_command('userdel jobe')
+    except:
+        pass
+    do_command('rm -r /home/jobe')
+    do_command('rm -r {}/files'.format(install_dir))
+    do_command('rm -r /var/log/jobe')
+
+    
+def main():
+    if len(sys.argv) > 2 or (len(sys.argv) > 1 and sys.argv[1] != '--purge'):
+        print("Usage: install [--purge]")
+        sys.exit(0)
+
+    purging = len(sys.argv) == 2
+        
+    install_dir = os.getcwd()
+    if install_dir not in JOBE_DIRS:
+        print("WARNING: Jobe appears not to have been installed in /var/www")
+        print ("or /var/www/html as expected. Things might turn ugly.")
+
+    if subprocess.check_output('whoami', shell=True) != b'root\n':
+            print("****This script must be run by root*****")
+            fail()
+    else:
+        try:
+            num_jobe_users = int(get_config('jobe_max_users', install_dir))
+            if purging:
+                print('Purging all prior jobe users and files')
+                do_purge(install_dir, num_jobe_users)
+            
+            print('Configuring for', num_jobe_users, 'simultaneous job runs') 
+            webserver_user = get_webserver()
+            print("Web server is", webserver_user)
+            print("Make user jobe")
+            make_user('jobe', 'Jobe user. Provides home for runs.', True, None)
+            print("Setting up file cache")
+            make_directory('{}/files'.format(install_dir), webserver_user);
+            do_command('chgrp {} {}/files'.format(webserver_user, install_dir))
+            do_command('chmod g+rwX {}/files'.format(install_dir))
+            print("Making required job-runner users")
+            for i in range(num_jobe_users):
+                username = 'jobe{:02d}'.format(i)
+                make_user(username, 'Jobe server task runner')
+           
+            print("Set up Jobe runs directory (/home/jobe/runs)")
+            make_directory('/home/jobe/runs', webserver_user)
+            print("Set up Jobe log directory (/var/log/jobe)")
+            make_directory('/var/log/jobe', webserver_user)
+
+            print("Building runguard")
+            runguard_commands = [
+                "cd {0}".format(install_dir + '/runguard'),
+                "gcc -o runguard runguard.c", # TODO Add -lcgroups  if using cgroups
+                "chmod 750 runguard"
+            ]
+            cmd = ';'.join(runguard_commands)
+            do_command(cmd)
+            print('Setting up sudo permissions for webserver')
+            make_sudoers(install_dir, webserver_user, num_jobe_users)
+            print("Runguard installation complete")
+
+        except Exception as e:
+            print("Exception during install: " + str(e))
+            fail()
+
+main()

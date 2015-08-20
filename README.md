@@ -1,2 +1,4 @@
 # Jobe-Docker
-Docker-Compose &amp; Docker file to launch a Jobe Server: https://github.com/trampgeek/jobe
+Docker-Compose and Docker file to launch a Jobe Server based on the current release at: 
+
+https://github.com/trampgeek/jobe

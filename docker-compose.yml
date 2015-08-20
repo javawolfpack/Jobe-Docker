@@ -1,0 +1,23 @@
+jobe:
+  restart: always
+  build: .
+  #volumes:
+  #  - ./jobe/:/var/www/html/jobe/
+  links:
+    - jobedb
+  #expose port 80 on container so it can be linked
+  expose:
+    - "80"
+  #map container port 80 to host port 8000
+  ports:
+    - 8000:80
+  #Command to put Apache in the foreground
+  command:  /usr/sbin/apache2ctl -D FOREGROUND
+  
+jobedb:
+  image: orchardup/mysql
+  environment:
+    MYSQL_DATABASE: jobe
+    MYSQL_ROOT_PASSWORD: rootuserpass
+    MYSQL_USER: jobe
+    MYSQL_PASSWORD: jobe
