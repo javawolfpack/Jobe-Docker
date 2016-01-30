@@ -6,4 +6,6 @@ RUN pip3 install pylint
 RUN pylint --reports=no --generate-rcfile > /etc/pylintrc
 ADD ./jobe /var/www/html/jobe/
 WORKDIR /var/www/html/jobe/
+RUN echo "ServerName localhost" | tee /etc/apache2/conf-available/fqdn.conf
+RUN a2enconf fqdn
 RUN /usr/sbin/apache2ctl start && ./install

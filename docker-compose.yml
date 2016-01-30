@@ -7,10 +7,10 @@ jobe:
     - jobedb
   #expose port 80 on container so it can be linked
   expose:
-    - "80"
+    - "8000"
   #map container port 80 to host port 8000
   ports:
-    - 8000:80
+    - 8000:8000
   #Command to put Apache in the foreground
   command:  /usr/sbin/apache2ctl -D FOREGROUND
   
